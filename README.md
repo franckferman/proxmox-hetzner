@@ -11,6 +11,7 @@ It boots the **official Proxmox ISO** inside a temporary QEMU/KVM VM that target
 - **Dual mode** — fully **interactive** prompts *or* **scriptable** via `--flags` (`--non-interactive` for zero prompts).
 - **Correct NIC handling** — detects the rescue interface (e.g. `eth0`) for address discovery **and** computes the name the installed Proxmox will actually use (e.g. `eno1`, via `udevadm net_id`). This avoids the classic "no network after reboot" trap.
 - **Clean disks first** — stops any pre-existing `mdadm` arrays, deactivates LVM and wipes signatures (`wipefs` / `sgdisk --zap-all` / `blkdiscard`) before installing. Prevents stale "ghost RAID" metadata from breaking the boot.
+- **Boot-order safety** — also detects and (optionally) neutralises a stale bootloader/RAID left on **non-target** disks. On legacy BIOS such a leftover bootloader hijacks the boot order and stops Proxmox from booting (`--wipe-foreign` / `--keep-foreign`).
 - **Configurable storage** — choose the **filesystem** (`zfs`/`ext4`/`xfs`/`btrfs`), the **RAID level** (`raid0`/`raid1`/`raid10`/`raidz…`) and the **disk set** (any number of disks).
 - **SSH key from first boot** — injects a root authorized key via the answer file (`root_ssh_keys`).
 - **Self-contained networking** — the `vmbr0` (public) + `vmbr1` (private NAT) config is generated inline, with no runtime dependency on this repo.
@@ -63,6 +64,29 @@ The script configures host networking (public `vmbr0` + NAT `vmbr1`). Typical ne
   then *Datacenter → Storage → Add → ZFS*.
 - **Expose VM services** with DNAT rules (the script only sets up outbound NAT/masquerade).
 - **Schedule `vzdump` backups** to your data pool (essential if root is `raid0`).
+
+## Post-install optimizations (optional)
+
+After the host has booted, run `post-install.sh` **on the Proxmox host** for common tweaks (all idempotent and toggleable):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/franckferman/proxmox-hetzner/main/post-install.sh -o post-install.sh
+bash post-install.sh                 # interactive defaults
+# or scripted, e.g.:
+bash post-install.sh --arc-max 16 --reboot no
+```
+
+It can: `apt dist-upgrade` + `pveam update`, install utilities (curl, libguestfs-tools, unzip, iptables-persistent, net-tools), remove the "no valid subscription" popup, tune **ZFS ARC** (`--arc-min`/`--arc-max`, default 6/12 GiB — raise it on high-RAM hosts), and tune `nf_conntrack`. Run `post-install.sh --help` for flags.
+
+## Troubleshooting
+
+**Server doesn't come back after the first reboot (no ping, no SSH).** On a legacy-BIOS server the firmware may be booting a *different* disk that still carries an old bootloader (e.g. a former install on a data disk), which drops to `grub rescue>` and hangs. Re-activate the Hetzner **Rescue System**, then wipe the offending disk's boot sector so the BIOS falls through to the freshly installed disk:
+
+```bash
+wipefs -a /dev/sdX && sgdisk --zap-all /dev/sdX && dd if=/dev/zero of=/dev/sdX bs=1M count=20
+```
+
+The installer now does this automatically via `--wipe-foreign` (see *Boot-order safety* above).
 
 ## Networking model (single public IP)
 

@@ -18,7 +18,7 @@
 #
 set -euo pipefail
 
-VERSION="2.0.0"
+VERSION="2.1.0"
 
 # --------------------------------------------------------------------------- #
 #  Pretty output                                                              #
@@ -57,6 +57,7 @@ NON_INTERACTIVE="no"
 ASSUME_YES="no"
 DO_REBOOT="ask"            # ask|yes|no
 WIPE="yes"
+WIPE_FOREIGN="ask"         # ask|yes|no — wipe NON-target disks carrying a stale bootloader/RAID
 WORKDIR="/root/proxmox-hetzner"
 
 usage() {
@@ -80,6 +81,9 @@ Storage:
   --disks LIST               Comma list, e.g. /dev/nvme0n1,/dev/nvme1n1
                              (default: auto-detect NVMe, else all disks)
   --no-wipe                  Do NOT erase target disks first (not recommended)
+  --wipe-foreign             Also neutralise NON-target disks holding a stale
+                             bootloader/RAID (prevents BIOS boot-order hijack)
+  --keep-foreign             Never touch non-target disks
 
 Network:
   --interface NAME           Proxmox NIC name            (default: auto-detect)
@@ -115,6 +119,8 @@ while [[ $# -gt 0 ]]; do
     --zfs-raid)             ZFS_RAID="$2"; shift 2;;
     --disks)                DISKS="$2"; shift 2;;
     --no-wipe)              WIPE="no"; shift;;
+    --wipe-foreign)         WIPE_FOREIGN="yes"; shift;;
+    --keep-foreign)         WIPE_FOREIGN="no"; shift;;
     --interface)            INTERFACE="$2"; shift 2;;
     --private-subnet)       PRIVATE_SUBNET="$2"; shift 2;;
     --root-password)        ROOT_PASSWORD="$2"; shift 2;;
@@ -268,7 +274,51 @@ wipe_disks() {
   partprobe 2>/dev/null || true
   ok "Disks wiped."
 }
+
+# Non-target disks that still carry a bootloader / RAID metadata can hijack the
+# (legacy) BIOS boot order and prevent the freshly installed system from booting.
+# This is THE failure mode seen in practice: an old GRUB left on a data disk.
+handle_foreign_boot() {
+  local -A is_target=(); local d reason f; local -a foreign=()
+  for d in "${DISK_ARR[@]}"; do is_target["$d"]=1; done
+  while read -r d; do
+    [[ -n ${is_target[$d]:-} ]] && continue
+    reason=""
+    dd if="$d" bs=512 count=1 2>/dev/null | grep -qa GRUB && reason="MBR bootloader"
+    lsblk -no FSTYPE "$d" 2>/dev/null | grep -q linux_raid_member && reason="${reason:+$reason + }mdadm member"
+    [[ -n $reason ]] && foreign+=("$d|$reason")
+  done < <(lsblk -dpno NAME,TYPE | awk '$2=="disk"{print $1}')
+
+  [[ ${#foreign[@]} -eq 0 ]] && { ok "No competing bootloader on other disks."; return 0; }
+
+  warn "Non-target disks carry a bootloader / RAID metadata:"
+  for f in "${foreign[@]}"; do warn "    - ${f%%|*}  (${f#*|})"; done
+  warn "On legacy BIOS these can HIJACK the boot order and stop Proxmox from booting."
+
+  local act="$WIPE_FOREIGN"
+  if [[ $act == ask ]]; then
+    if [[ $NON_INTERACTIVE == yes ]]; then act=no
+    else read -r -p "Wipe these disks too? (recommended unless they hold data you keep) [y/N]: " a
+         [[ ${a,,} == y* ]] && act=yes || act=no; fi
+  fi
+  if [[ $act == yes ]]; then
+    for md in /dev/md*; do [[ -b $md ]] && mdadm --stop "$md" 2>/dev/null || true; done
+    for f in "${foreign[@]}"; do
+      d="${f%%|*}"
+      mdadm --zero-superblock "${d}"* 2>/dev/null || true
+      wipefs -a "$d" 2>/dev/null || true
+      sgdisk --zap-all "$d" 2>/dev/null || true
+      dd if=/dev/zero of="$d" bs=1M count=20 conv=fsync 2>/dev/null || true
+      ok "Neutralised foreign disk: $d"
+    done
+    partprobe 2>/dev/null || true
+  else
+    warn "Leaving them as-is. If the server fails to boot after reboot, this is the most likely cause."
+  fi
+}
+
 [[ $WIPE == yes ]] && wipe_disks || warn "Skipping disk wipe (--no-wipe)."
+handle_foreign_boot
 
 # --------------------------------------------------------------------------- #
 #  Packages + ISO                                                             #
