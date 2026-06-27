@@ -8,7 +8,7 @@
 # Everything is idempotent and individually toggleable. Run with --help.
 #
 set -euo pipefail
-VERSION="1.0.0"
+VERSION="1.1.0"
 
 if [[ -t 1 ]]; then
   C_R=$'\033[1;31m'; C_G=$'\033[1;32m'; C_Y=$'\033[1;33m'; C_B=$'\033[1;34m'; C_0=$'\033[0m'
@@ -20,6 +20,7 @@ die()  { echo -e "${C_R}[x]${C_0} $*" >&2; exit 1; }
 
 # Defaults
 DO_UPGRADE=yes
+DO_REPOFIX=yes
 DO_UTILS=yes
 DO_SUBNAG=yes
 DO_ARC=yes
@@ -33,6 +34,8 @@ usage() {
 proxmox-hetzner post-install v${VERSION}  (run on the Proxmox host)
 
   --no-upgrade        Skip apt dist-upgrade / pveam update
+  --no-repo-fix       Keep APT repos as-is (default: disable enterprise repos
+                      and enable pve-no-subscription)
   --no-utils          Skip installing utilities (curl, libguestfs-tools, unzip,
                       iptables-persistent, net-tools)
   --no-sub-nag        Keep the "no valid subscription" popup
@@ -52,6 +55,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-upgrade)   DO_UPGRADE=no; shift;;
+    --no-repo-fix)  DO_REPOFIX=no; shift;;
     --no-utils)     DO_UTILS=no; shift;;
     --no-sub-nag)   DO_SUBNAG=no; shift;;
     --no-arc)       DO_ARC=no; shift;;
@@ -68,6 +72,29 @@ done
 command -v pveversion >/dev/null || die "This is not a Proxmox VE host (run it on the installed system)."
 
 NEED_REBOOT=0
+
+# 0) Repositories: disable enterprise (401 without a subscription), ensure
+#    pve-no-subscription. Handles deb822 (.sources, PVE 9) and legacy (.list).
+fix_repos() {
+  log "Setting no-subscription repositories ..."
+  . /etc/os-release 2>/dev/null || true
+  local cn="${VERSION_CODENAME:-trixie}" f
+  rm -f /etc/apt/sources.list.d/pve-enterprise.sources /etc/apt/sources.list.d/pve-enterprise.list
+  for f in /etc/apt/sources.list.d/ceph.sources /etc/apt/sources.list.d/ceph.list; do
+    [[ -f $f ]] && grep -qi 'enterprise.proxmox.com' "$f" && { rm -f "$f"; warn "Removed enterprise Ceph repo ($f); re-add a no-subscription Ceph repo if you use Ceph."; }
+  done
+  if ! grep -rqs 'pve-no-subscription' /etc/apt/sources.list.d/ /etc/apt/sources.list 2>/dev/null; then
+    cat > /etc/apt/sources.list.d/pve-no-subscription.sources <<EOF
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: ${cn}
+Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+EOF
+    ok "Added pve-no-subscription."
+  fi
+}
+[[ $DO_REPOFIX == yes ]] && fix_repos
 
 # 1) System upgrade --------------------------------------------------------- #
 if [[ $DO_UPGRADE == yes ]]; then

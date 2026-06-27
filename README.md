@@ -14,6 +14,7 @@ It boots the **official Proxmox ISO** inside a temporary QEMU/KVM VM that target
 - **Boot-order safety** — also detects and (optionally) neutralises a stale bootloader/RAID left on **non-target** disks. On legacy BIOS such a leftover bootloader hijacks the boot order and stops Proxmox from booting (`--wipe-foreign` / `--keep-foreign`).
 - **Configurable storage** — choose the **filesystem** (`zfs`/`ext4`/`xfs`/`btrfs`), the **RAID level** (`raid0`/`raid1`/`raid10`/`raidz…`) and the **disk set** (any number of disks).
 - **SSH key from first boot** — injects a root authorized key via the answer file (`root_ssh_keys`).
+- **No-subscription repos out of the box** — disables the enterprise repos (which return `401` without a subscription and break `apt`) and enables `pve-no-subscription`, both at install time and in `post-install.sh`.
 - **Self-contained networking** — the `vmbr0` (public) + `vmbr1` (private NAT) config is generated inline, with no runtime dependency on this repo.
 - **Safer bash** — `set -euo pipefail`, input validation (root/rescue/KVM/disks), and an explicit destructive-action confirmation.
 

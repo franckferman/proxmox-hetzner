@@ -18,7 +18,7 @@
 #
 set -euo pipefail
 
-VERSION="2.1.0"
+VERSION="2.2.0"
 
 # --------------------------------------------------------------------------- #
 #  Pretty output                                                              #
@@ -485,7 +485,27 @@ ssh-keygen -R "[localhost]:5555" -f /root/.ssh/known_hosts >/dev/null 2>&1 || tr
    printf 'nameserver 185.12.64.1\nnameserver 185.12.64.2\nnameserver 1.1.1.1\n' >/etc/resolv.conf; \
    systemctl disable --now rpcbind rpcbind.socket 2>/dev/null || true; \
    [ -f /etc/apt/sources.list ] && mv /etc/apt/sources.list /etc/apt/sources.list.bak || true"
-ok "Post-install configuration applied."
+
+# Switch the installed system to no-subscription repos (the default install
+# enables the enterprise repos, which 401 without a subscription).
+"${SSHP[@]}" ssh -p 5555 "${SOPT[@]}" root@localhost 'bash -s' <<'REPOFIX'
+. /etc/os-release 2>/dev/null || true
+CN="${VERSION_CODENAME:-trixie}"
+rm -f /etc/apt/sources.list.d/pve-enterprise.sources /etc/apt/sources.list.d/pve-enterprise.list
+for f in /etc/apt/sources.list.d/ceph.sources /etc/apt/sources.list.d/ceph.list; do
+  [ -f "$f" ] && grep -qi enterprise.proxmox.com "$f" && rm -f "$f"
+done
+if ! grep -rqs pve-no-subscription /etc/apt/sources.list.d/ /etc/apt/sources.list 2>/dev/null; then
+  cat > /etc/apt/sources.list.d/pve-no-subscription.sources <<EOF
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: $CN
+Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+EOF
+fi
+REPOFIX
+ok "Post-install configuration applied (no-subscription repos set)."
 
 log "Powering off helper VM ..."
 "${SSHP[@]}" ssh -p 5555 "${SOPT[@]}" root@localhost poweroff 2>/dev/null || true
